@@ -34,7 +34,9 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
     endif()
 endif()
 
-project(Breakout VERSION 0.5.0 LANGUAGES CXX)
+project(Breakout VERSION 0.3.0 LANGUAGES CXX)
+
+include(CTest)
 
 # -----------------------------------------------------------------------------
 #  Global C++ settings
@@ -86,6 +88,9 @@ FetchContent_MakeAvailable(raylib)
 # -----------------------------------------------------------------------------
 add_executable(Breakout
     src/main.cpp
+    src/CameraSystem.cpp
+    src/SceneRenderer3D.cpp
+    src/MapMeshBuilder.cpp
     src/IsometricMath.cpp
     src/Renderer.cpp
     src/MapGenerator.cpp
@@ -121,6 +126,46 @@ add_custom_command(TARGET Breakout POST_BUILD
             "$<TARGET_FILE_DIR:Breakout>/assets"
     COMMENT "[Breakout] copying assets/ next to the executable"
 )
+
+# Asset edits should refresh the runnable tree even when sources do not change.
+file(GLOB_RECURSE BREAKOUT_RUNTIME_ASSETS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/*"
+)
+set_property(TARGET Breakout APPEND PROPERTY LINK_DEPENDS ${BREAKOUT_RUNTIME_ASSETS})
+add_custom_target(BreakoutAssets ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+            "$<TARGET_FILE_DIR:Breakout>/assets"
+    DEPENDS Breakout
+    COMMENT "[Breakout] synchronizing runtime assets"
+)
+
+if(BUILD_TESTING)
+    add_executable(BreakoutMathTests
+        tests/PortMathTests.cpp
+        src/CameraSystem.cpp
+        src/IsometricMath.cpp
+    )
+    target_include_directories(BreakoutMathTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(BreakoutMathTests PRIVATE raylib)
+    add_test(NAME breakout_math COMMAND BreakoutMathTests)
+
+    add_executable(BreakoutGameplayTests
+        tests/GameplayParityTests.cpp
+        src/MapGenerator.cpp
+    )
+    target_include_directories(BreakoutGameplayTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(BreakoutGameplayTests PRIVATE raylib)
+    add_test(NAME breakout_gameplay COMMAND BreakoutGameplayTests)
+
+    add_executable(BreakoutMapMeshTests
+        tests/MapMeshTests.cpp
+        src/MapMeshBuilder.cpp
+    )
+    target_include_directories(BreakoutMapMeshTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(BreakoutMapMeshTests PRIVATE raylib)
+    add_test(NAME breakout_map_mesh COMMAND BreakoutMapMeshTests)
+endif()
 
 # -----------------------------------------------------------------------------
 #  Platform specific flags

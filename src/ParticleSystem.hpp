@@ -24,9 +24,9 @@ public:
     ParticleSystem(const ParticleSystem&) = delete;
     ParticleSystem& operator=(const ParticleSystem&) = delete;
 
-    /// Spawn an explosion of `count` particles at `cartesianPos` with `color`.
-    /// Particles fly outward from the center with random speeds.
-    static void SpawnExplosion(Game& game, Vector2 cartesianPos, int count, Color color);
+    /// Spawn an explosion at `cartesianPos`; screenLift raises wall sparks above the floor.
+    static void SpawnExplosion(Game& game, Vector2 cartesianPos, int count, Color color,
+                               float screenLift = 0.0f);
 
     /// Update all active particles: integrate velocity, decay life.
     static void UpdateParticles(Game& game, float deltaTime);

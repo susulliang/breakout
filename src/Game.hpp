@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Renderer.hpp"
+#include "InputState.hpp"
 
 #include "raylib.h"
 
@@ -72,6 +73,12 @@ constexpr int kMaxShaderLights = 16;
 /// Fixed size particle pool: no allocation during play (flat memory model).
 constexpr int kMaxParticles = 1000;
 
+/// Weapon pickups have one possible instance for each non-default weapon.
+constexpr int kMaxWeaponPickups = 3;
+
+/// Maximum death fragments: 70 enemies x 6 fragments each.
+constexpr int kMaxDeathPieces = 420;
+
 /// Number of procedurally generated levels of the run; reaching the exit of
 /// level kTotalLevels ends the game in VICTORY.
 constexpr int kTotalLevels = 10;
@@ -132,12 +139,14 @@ struct RoomRect
 struct Player
 {
     Vector2 pos{ 3.0f, 3.0f };   ///< cartesian grid position (tile units)
+    Vector2 aimDirection{ 1.0f, 0.0f }; ///< normalized cartesian aim direction
     float   speed  = 4.0f;       ///< tiles per second
     float   radius = 0.3f;       ///< AABB half extent, in cartesian tile units
 
     // --- Phase 5: survivability ---------------------------------------------
     int hp    = 100;             ///< current hit points; <= 0 -> GAME_OVER
     int maxHp = 100;             ///< full-health ceiling, also the HUD bar scale
+    int medPacks = 3;            ///< consumables; key 5 restores up to 40 HP
 
     /// Seconds of contact-damage immunity left (Phase 5 fix). Refilled by
     /// EnemySystem on every hit, so a body parked on the player drains the bar
@@ -145,14 +154,41 @@ struct Player
     float hurtCooldown = 0.0f;
 };
 
+/// Four fixed inventory slots; the slingshot is the unlimited default weapon.
+enum class WeaponSlot : int
+{
+    Slingshot = 0,
+    Shotgun   = 1,
+    Marksman  = 2,
+    Gatling   = 3
+};
+
+enum class RenderBackend
+{
+    Legacy2D,
+    World3D
+};
+
+/// Persistent per-run inventory. Ammo is consumed by non-default weapons.
+struct WeaponInventory
+{
+    std::array<int, 4> ammo{{ -1, 0, 0, 0 }}; ///< -1 means unlimited
+    WeaponSlot selected = WeaponSlot::Slingshot;
+    float fireCooldown = 0.0f;
+};
+
 /// One slot of the fixed size bullet pool. Inactive slots are dormant memory.
 struct Bullet
 {
     bool    active = false;      ///< false -> slot is free for reuse
     Vector2 pos{};               ///< cartesian grid position (tile units)
+    Vector2 previousPos{};       ///< previous step, used for the slingshot streak
     Vector2 vel{};               ///< cartesian velocity in tiles per second
+    Vector2 aimScreen{};         ///< cursor position captured when this shot fired
     float   speed  = 12.0f;      ///< muzzle speed, tiles per second
     float   radius = 0.1f;       ///< collision probe radius, tile units
+    float   damage = 1.0f;       ///< body damage before headshot multiplier
+    WeaponSlot weapon = WeaponSlot::Slingshot;
 };
 
 /// A point light authored in cartesian tile units; consumed by LightingSystem.
@@ -203,7 +239,35 @@ struct Enemy
     float        hp       = 10.0f; ///< hit points (damage scale with difficulty)
     float        speed    = 1.0f;  ///< tiles per second at difficulty 1.0x
     float        radius   = 0.3f;  ///< AABB half extent, same as player
+    float        hitRadius = 0.68f; ///< generous projectile target around the silhouette
+    float        hitSlowTime = 0.0f; ///< remaining duration of hit stagger
+    Vector2      knockbackVelocity{}; ///< brief impulse away from the shot
     EnemyState   state    = EnemyState::IDLE;
+};
+
+/// A collectible weapon pickup, placed on a walkable tile.
+struct WeaponPickup
+{
+    bool       active = false;
+    WeaponSlot slot = WeaponSlot::Shotgun;
+    Vector2    pos{};
+};
+
+/// One detached enemy sprite part; it settles, lingers, then fades into the pool.
+struct DeathPiece
+{
+    bool    active = false;
+    bool    settled = false;
+    int     spritePart = 0;       ///< 0 helmet, 1 torso, 2 arm, 3 leg
+    int     facing = 1;
+    Vector2 pos{};                ///< cartesian ground-plane position
+    Vector2 vel{};                ///< cartesian scatter velocity
+    float   screenLift = 0.0f;    ///< height above the floor in pixels
+    float   verticalVelocity = 0.0f;
+    float   rotation = 0.0f;
+    float   rotationVelocity = 0.0f;
+    float   scale = 0.35f;
+    float   age = 0.0f;
 };
 
 // =============================================================================
@@ -224,6 +288,7 @@ struct Particle
     bool    active  = false;                          ///< false -> slot is free
     Vector2 pos{};                                    ///< cartesian tile units
     Vector2 vel{};                                    ///< tiles per second
+    float   screenLift = 0.0f;                         ///< visual height above the floor, in pixels
     float   life    = 0.0f;                           ///< seconds left
     float   maxLife = 0.3f;                           ///< lifetime it spawned with
     Color   color   = Color{ 255, 255, 255, 255 };    ///< tint, faded by life
@@ -238,6 +303,11 @@ struct Game
     GameState state = GameState::INIT;
     Renderer  renderer{};
     Camera2D  camera{};
+    Camera3D  camera3D{};
+    bool camera3DReady = false;
+    RenderBackend renderBackend = RenderBackend::Legacy2D;
+    InputFrame input{};
+    AimResult aim{};
 
     int     hoveredCellX = -1;              ///< mouse-picked cell, grid space
     int     hoveredCellY = -1;
@@ -278,6 +348,11 @@ struct Game
     /// assets/sprites/player.png when present; id == 0 selects the procedural
     /// polygon fallback drawn by PlayerSystem.
     Texture2D playerTexture{};
+    /// assets/sprites/enemy.png when present; id == 0 selects EnemySystem's fallback.
+    Texture2D enemyTexture{};
+    /// Optional weapon and enemy-fragment icon sheets.
+    Texture2D weaponTexture{};
+    Texture2D enemyPartsTexture{};
 
     float playerAnimPhase = 0.0f;           ///< walk cycle timer (seconds)
     int   playerFacing    = 1;              ///< -1 == facing left, +1 == facing right
@@ -287,10 +362,16 @@ struct Game
     std::array<Enemy, 200> enemies{};
 
     int  enemyCount = 0;                    ///< active enemies in the current level
+    WeaponInventory weapons{};
+    std::array<WeaponPickup, kMaxWeaponPickups> weaponPickups{};
+    std::array<DeathPiece, kMaxDeathPieces> deathPieces{};
 
     // --- Phase 5: effects ----------------------------------------------------
     /// Fixed size particle pool (kMaxParticles slots, flat memory model).
     /// Filled by ParticleSystem::SpawnExplosion(), drained by
     /// ParticleSystem::UpdateParticles() and reset on every level start.
     std::array<Particle, kMaxParticles> particles{};
+
+    float hitFeedbackTime = 0.0f;           ///< crosshair hit-confirm flash time
+    bool  hitFeedbackHeadshot = false;      ///< selects the larger headshot marker
 };

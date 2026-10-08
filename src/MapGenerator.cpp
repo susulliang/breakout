@@ -207,8 +207,8 @@ void MapGenerator::GenerateMap(Game& game)
         room.y       = ry;
         room.width   = width;
         room.height  = height;
-        room.centerX = static_cast<float>(rx + width / 2);
-        room.centerY = static_cast<float>(ry + height / 2);
+        room.centerX = static_cast<float>(rx + width / 2) + 0.5f;
+        room.centerY = static_cast<float>(ry + height / 2) + 0.5f;
         rooms.push_back(room);
     }
 
@@ -223,8 +223,8 @@ void MapGenerator::GenerateMap(Game& game)
         room.y       = rx;
         room.width   = size;
         room.height  = size;
-        room.centerX = static_cast<float>(rx + size / 2);
-        room.centerY = static_cast<float>(rx + size / 2);
+        room.centerX = static_cast<float>(rx + size / 2) + 0.5f;
+        room.centerY = static_cast<float>(rx + size / 2) + 0.5f;
         rooms.push_back(room);
     }
 

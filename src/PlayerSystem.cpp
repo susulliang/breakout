@@ -1,5 +1,6 @@
 #include "PlayerSystem.hpp"
 
+#include "CameraSystem.hpp"
 #include "IsometricMath.hpp"
 #include "World.hpp"
 
@@ -15,43 +16,11 @@ constexpr int   kSpriteFrameCount   = 4;
 constexpr float kSpriteFramesPerSecond = 7.0f;
 constexpr float kSpriteFrameSize    = 64.0f;   ///< Frame size inside the sprite sheet.
 
-// --- collision ------------------------------------------------------------
-/// Skin used when sampling the grid so a probe never lands exactly on a cell border.
-constexpr float kCollisionSkin = 1e-4f;
-
 // --- rendering ------------------------------------------------------------
 constexpr float kSpriteScale = 0.75f;   ///< 64 px frame -> 48 px on screen (~1.2 tiles).
 constexpr float kShadowAlpha = 0.42f;
 constexpr float kShadowHalfWidth  = 15.0f;
 constexpr float kShadowHalfHeight = 7.0f;
-
-/**
- * @brief Probes the columns crossed when moving the player centre to `targetX`.
- * Only the leading edge (targetX +/- radius) is tested, plus the centre row and
- * the two corner rows, which approximates the AABB against the tile grid.
- */
-bool BlockedAlongX(const Game& game, float targetX, float currentX, float centerY)
-{
-    const float radius = game.player.radius;
-    const float edge   = (targetX > currentX) ? (targetX + radius) : (targetX - radius);
-    const int   cellX  = static_cast<int>(std::floor(edge));
-
-    return IsSolidTile(game, cellX, static_cast<int>(std::floor(centerY - radius + kCollisionSkin))) ||
-           IsSolidTile(game, cellX, static_cast<int>(std::floor(centerY))) ||
-           IsSolidTile(game, cellX, static_cast<int>(std::floor(centerY + radius - kCollisionSkin)));
-}
-
-/// Same probe on the Y axis, evaluated with the already resolved X position.
-bool BlockedAlongY(const Game& game, float centerX, float targetY, float currentY)
-{
-    const float radius = game.player.radius;
-    const float edge   = (targetY > currentY) ? (targetY + radius) : (targetY - radius);
-    const int   cellY  = static_cast<int>(std::floor(edge));
-
-    return IsSolidTile(game, static_cast<int>(std::floor(centerX - radius + kCollisionSkin)), cellY) ||
-           IsSolidTile(game, static_cast<int>(std::floor(centerX)), cellY) ||
-           IsSolidTile(game, static_cast<int>(std::floor(centerX + radius - kCollisionSkin)), cellY);
-}
 
 /// Procedural fallback figure: stacked isometric cylinder, cold blue (Task 6.1).
 void DrawProceduralPlayer(Vector2 screen)
@@ -125,53 +94,33 @@ int PlayerSystem::CurrentFrame(const Game& game)
 
 void PlayerSystem::UpdatePlayer(Game& game, float deltaTime)
 {
-    // --- 1. read input (WASD + arrows) ---------------------------------
-    Vector2 direction{ 0.0f, 0.0f };
-    if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))    direction.y -= 1.0f;
-    if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))  direction.y += 1.0f;
-    if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))  direction.x -= 1.0f;
-    if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) direction.x += 1.0f;
+    const Vector2 aimPoint{ game.aim.groundPoint.x, game.aim.groundPoint.z };
+    const Vector2 aimDelta{ aimPoint.x - game.player.pos.x, aimPoint.y - game.player.pos.y };
 
-    const bool moving = (direction.x != 0.0f) || (direction.y != 0.0f);
+    Vector2 forward{ 1.0f, 0.0f };
+    if (VectorLength(aimDelta) > 1e-4f)
+    {
+        forward = VectorNormalized(aimDelta);
+    }
+    game.player.aimDirection = forward;
+
+    Vector2 screenDirection = game.input.screenMove;
+    const float facingBias = forward.x - forward.y;
+    if (std::fabs(facingBias) > 1e-3f)
+    {
+        game.playerFacing = (facingBias < 0.0f) ? -1 : 1;
+    }
+
+    const bool moving = (screenDirection.x != 0.0f) || (screenDirection.y != 0.0f);
     if (moving)
     {
-        direction = VectorNormalized(direction);   // no diagonal speed-up
-
-        const float step = game.player.speed * deltaTime;
-
-        // --- 2. axis separated collision: X first, then Y ---------------
-        if (direction.x != 0.0f)
-        {
-            const float targetX = game.player.pos.x + direction.x * step;
-            if (!BlockedAlongX(game, targetX, game.player.pos.x, game.player.pos.y))
-            {
-                game.player.pos.x = targetX;
-            }
-        }
-        if (direction.y != 0.0f)
-        {
-            const float targetY = game.player.pos.y + direction.y * step;
-            if (!BlockedAlongY(game, game.player.pos.x, targetY, game.player.pos.y))
-            {
-                game.player.pos.y = targetY;
-            }
-        }
-
-        // --- 3. hard clamp inside the map ------------------------------
-        const float maxX = static_cast<float>(game.mapWidth > 0 ? game.mapWidth - 1 : 0);
-        const float maxY = static_cast<float>(game.mapHeight > 0 ? game.mapHeight - 1 : 0);
-        game.player.pos.x = ClampFloat(game.player.pos.x, 0.0f, maxX);
-        game.player.pos.y = ClampFloat(game.player.pos.y, 0.0f, maxY);
+        screenDirection = VectorNormalized(screenDirection);
+        const Vector2 velocity = CameraSystem::ScreenMovement(screenDirection, game.player.speed);
+        const Vector2 delta{ velocity.x * deltaTime, velocity.y * deltaTime };
+        MoveGroundWithWallSlide(game, game.player.pos, delta, game.player.radius);
 
         // --- 4. animation bookkeeping ----------------------------------
         game.playerAnimPhase += deltaTime;
-
-        // Screen-right in this projection means increasing (x - y).
-        const float facingBias = direction.x - direction.y;
-        if (std::fabs(facingBias) > 1e-3f)
-        {
-            game.playerFacing = (facingBias < 0.0f) ? -1 : 1;
-        }
     }
     else
     {
@@ -194,8 +143,12 @@ void PlayerSystem::RenderPlayer(const Game& game)
     const Texture2D texture    = game.playerTexture;
     const int       frame      = CurrentFrame(game);
     const int       facing     = game.playerFacing;
+    const bool      hasWeaponAtlas = game.weaponTexture.id != 0;
+    const Texture2D weaponAtlas = game.weaponTexture;
+    const int       selectedWeapon = static_cast<int>(game.weapons.selected);
 
-    renderer.Submit(depth, [screen, hasTexture, texture, frame, facing]()
+    renderer.Submit(depth, [screen, hasTexture, texture, frame, facing,
+                            hasWeaponAtlas, weaponAtlas, selectedWeapon]()
     {
         // Task 6.3: alpha black contact shadow, keeps the figure "standing" on the tile.
         DrawContactShadow(screen, kShadowHalfWidth, kShadowHalfHeight, kShadowAlpha);
@@ -215,6 +168,18 @@ void PlayerSystem::RenderPlayer(const Game& game)
         else
         {
             DrawProceduralPlayer(screen);
+        }
+
+        if (hasWeaponAtlas && selectedWeapon > 0)
+        {
+            const float sourceWidth = (facing < 0) ? -64.0f : 64.0f;
+            const Rectangle source{ static_cast<float>(selectedWeapon) * 64.0f,
+                                    0.0f, sourceWidth, 64.0f };
+            const Vector2 heldAt{ screen.x + static_cast<float>(facing) * 12.0f,
+                                  screen.y - 27.0f };
+            const Rectangle dest{ heldAt.x, heldAt.y, 25.0f, 25.0f };
+            DrawTexturePro(weaponAtlas, source, dest, Vector2{ 12.5f, 12.5f },
+                           0.0f, WHITE);
         }
     });
 }

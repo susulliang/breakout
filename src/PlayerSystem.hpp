@@ -25,11 +25,11 @@ public:
     static void UnloadAssets(Game& game);
 
     /**
-     * @brief WASD movement with axis separated AABB collision against walls.
+     * @brief Fixed-axis WASD movement with axis-separated AABB collision.
      *
-     * The move vector is normalized so diagonal input is not faster, then each
-     * axis is probed independently: a blocked axis is cancelled while the other
-     * keeps sliding, which produces the "hug the wall" behaviour.
+     * WASD follows fixed screen-cardinal directions, converted to Cartesian
+     * movement for collision. Diagonals are normalized; cursor aim only
+     * controls player facing.
      */
     static void UpdatePlayer(Game& game, float deltaTime);
 

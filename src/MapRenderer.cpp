@@ -35,6 +35,10 @@ const Color kWallSkirt  = {  38,  43,  54, 255 };
 constexpr float kGroutInsetX = 2.5f;
 constexpr float kGroutInsetY = 1.25f;
 
+/// Floors are coplanar with actors; bias them back so adjacent diamonds cannot
+/// paint over a character's feet. Raised walls keep their normal depth.
+constexpr float kFloorDepthBias = 0.51f;
+
 /// Fake light direction: everything casts towards the lower right.
 constexpr float kShadowShiftX = 5.0f;
 constexpr float kShadowShiftY = 2.5f;
@@ -130,7 +134,8 @@ void MapRenderer::RenderMap(const Game& game)
                 continue;   // outside the level, never drawn
             }
 
-            const Vector2 cartesian{ static_cast<float>(x), static_cast<float>(y) };
+            const Vector2 cartesian{ static_cast<float>(x) + 0.5f,
+                                     static_cast<float>(y) + 0.5f };
             const Vector2 isometric = IsometricMath::CartesianToIsometric(cartesian);
 
             const Vector2 center{
@@ -147,7 +152,8 @@ void MapRenderer::RenderMap(const Game& game)
                 // Checkerboard shading keeps the large, flat rooms readable
                 // without introducing any texture noise.
                 const bool checker = ((x + y) % 2 == 0);
-                SubmitFloorTile(renderer, depth, center, checker ? kFloorBase : kFloorAlt);
+                SubmitFloorTile(renderer, depth - kFloorDepthBias, center,
+                                checker ? kFloorBase : kFloorAlt);
             }
             else
             {

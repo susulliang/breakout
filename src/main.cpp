@@ -30,20 +30,24 @@
 #include "Game.hpp"
 
 #include "CombatSystem.hpp"
+#include "CameraSystem.hpp"
 #include "EnemySystem.hpp"
 #include "LightingSystem.hpp"
 #include "MapGenerator.hpp"
 #include "MapRenderer.hpp"
+#include "SceneRenderer3D.hpp"
 #include "ParticleSystem.hpp"
 #include "PlayerSystem.hpp"
 #include "Props.hpp"
 #include "World.hpp"
+#include "World3D.hpp"
 
 #include "raylib.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 
 namespace
 {
@@ -55,10 +59,6 @@ constexpr char  kWindowTitle[]  = "Breakout - Phase 5 (Game Loop & Polish)";
 
 constexpr float kMaxFrameTime   = 0.05f;   ///< clamp spikes after a stalled frame
 constexpr float kBootScreenTime = 1.25f;   ///< INIT state duration, in seconds
-
-/// Phase 5: the camera target lerps at this rate (per second) towards the
-/// player. 5.0 * deltaTime yields a ~0.2 s settle time at 60 fps.
-constexpr float kCameraFollowLerp = 5.0f;
 
 /// Phase 5: walking within this many tiles of the exit completes the level.
 constexpr float kExitRadius = 1.0f;
@@ -92,6 +92,7 @@ Game g_game{};
 
 /// Phase 3.F: RenderTexture + GLSL lighting pipeline for the PLAYING state.
 LightingSystem g_lighting{};
+SceneRenderer3D g_scene3D{};
 
 // -----------------------------------------------------------------------------
 //  Small helpers
@@ -107,17 +108,53 @@ const char* TileName(int tile)
     }
 }
 
-/// Linear interpolation used by the follow camera (Vector2Lerp is not part of
-/// the raylib subset this project builds against).
-float LerpFloat(float a, float b, float t)
-{
-    return a + (b - a) * t;
-}
-
 /// Draws text horizontally centred around (centerX, y) at its natural width.
 void DrawCenteredText(const char* text, int centerX, int y, int fontSize, Color color)
 {
     DrawText(text, centerX - MeasureText(text, fontSize) / 2, y, fontSize, color);
+}
+
+/// Replaces the platform pointer with a high-contrast in-game aiming reticle.
+void DrawCrosshair(const Game& game)
+{
+    const Vector2 mouse = game.input.mouse;
+    const Color outline = Color{ 10, 11, 16, 240 };
+    const bool confirmed = game.hitFeedbackTime > 0.0f;
+    const float feedback = confirmed ? ClampFloat(game.hitFeedbackTime / 0.34f, 0.0f, 1.0f) : 0.0f;
+    const float scale = confirmed ? (game.hitFeedbackHeadshot ? 1.8f : 1.35f) : 1.0f;
+    const Color accent = confirmed ? Color{ 255, 54, 58, 255 } : Color{ 255, 214, 64, 255 };
+    const float arm = 12.0f * scale;
+    const float inner = 4.0f * scale;
+
+    DrawCircleLinesV(mouse, 7.0f * scale, outline);
+    DrawCircleLinesV(mouse, 5.0f * scale, accent);
+    if (confirmed && game.hitFeedbackHeadshot)
+        DrawCircleLinesV(mouse, 13.0f * scale, Fade(accent, feedback));
+    DrawLineEx(Vector2{ mouse.x - arm, mouse.y }, Vector2{ mouse.x - inner, mouse.y },
+               3.0f, outline);
+    DrawLineEx(Vector2{ mouse.x + inner, mouse.y }, Vector2{ mouse.x + arm, mouse.y },
+               3.0f, outline);
+    DrawLineEx(Vector2{ mouse.x, mouse.y - arm }, Vector2{ mouse.x, mouse.y - inner },
+               3.0f, outline);
+    DrawLineEx(Vector2{ mouse.x, mouse.y + inner }, Vector2{ mouse.x, mouse.y + arm },
+               3.0f, outline);
+    DrawLineEx(Vector2{ mouse.x - arm, mouse.y }, Vector2{ mouse.x - inner, mouse.y },
+               1.5f, accent);
+    DrawLineEx(Vector2{ mouse.x + inner, mouse.y }, Vector2{ mouse.x + arm, mouse.y },
+               1.5f, accent);
+    DrawLineEx(Vector2{ mouse.x, mouse.y - arm }, Vector2{ mouse.x, mouse.y - inner },
+               1.5f, accent);
+    DrawLineEx(Vector2{ mouse.x, mouse.y + inner }, Vector2{ mouse.x, mouse.y + arm },
+               1.5f, accent);
+    DrawCircleV(mouse, 1.5f, accent);
+}
+
+void ResetRunInventory(Game& game)
+{
+    game.weapons.ammo = {{ -1, 0, 0, 0 }};
+    game.weapons.selected = WeaponSlot::Slingshot;
+    game.weapons.fireCooldown = 0.0f;
+    game.player.medPacks = 3;
 }
 
 /// Phase 5: number of live particles, for the HUD readout.
@@ -143,46 +180,6 @@ void EnterState(Game& game, GameState next)
 }
 
 // -----------------------------------------------------------------------------
-//  Camera
-// -----------------------------------------------------------------------------
-
-/// Places the camera exactly on the player, without interpolation. Used on
-/// spawn and after every level transition so a fresh map is not panned into.
-void SnapCameraToPlayer(Game& game)
-{
-    game.camera.offset   = Vector2{ static_cast<float>(GetScreenWidth()) * 0.5f,
-                                    static_cast<float>(GetScreenHeight()) * 0.55f };
-    game.camera.target   = CartesianToScreen(game.player.pos);
-    game.camera.rotation = 0.0f;
-    game.camera.zoom     = 1.0f;
-}
-
-/**
- * @brief Phase 5: smooth follow camera.
- *
- * The projection is still the World.hpp one-stop helper CartesianToScreen()
- * (isometric unit -> pixels, the same conversion the renderer and the cursor
- * unprojection use), but the camera target is no longer snapped to it: the
- * target is lerped towards the player with a frame-rate independent factor
- * kCameraFollowLerp * deltaTime, which keeps the follow crisp while giving the
- * view a soft trailing feel on sharp direction changes.
- */
-void UpdateCameraFollow(Game& game, float deltaTime)
-{
-    const Vector2 targetScreen = CartesianToScreen(game.player.pos);
-
-    game.camera.offset   = Vector2{ static_cast<float>(GetScreenWidth()) * 0.5f,
-                                    static_cast<float>(GetScreenHeight()) * 0.55f };
-    game.camera.rotation = 0.0f;
-    game.camera.zoom     = 1.0f;
-
-    const float t = ClampFloat(kCameraFollowLerp * deltaTime, 0.0f, 1.0f);
-
-    game.camera.target.x = LerpFloat(game.camera.target.x, targetScreen.x, t);
-    game.camera.target.y = LerpFloat(game.camera.target.y, targetScreen.y, t);
-}
-
-// -----------------------------------------------------------------------------
 //  Level lifecycle
 // -----------------------------------------------------------------------------
 
@@ -201,10 +198,16 @@ void UpdateCameraFollow(Game& game, float deltaTime)
 void StartLevel(Game& game)
 {
     MapGenerator::GenerateMap(game);
+    g_scene3D.RebuildLevel(game);
 
     CombatSystem::ResetPool(game);          // Phase 5: bullets
+    EnemySystem::ResetDeathPieces(game);
+    CombatSystem::ResetLevelPickups(game);
     ParticleSystem::ResetParticles(game);   // Phase 5: effects
+    game.hitFeedbackTime = 0.0f;
+    game.hitFeedbackHeadshot = false;
     EnemySystem::PopulateEnemies(game);     // Phase 5: enemies (clears + respawns)
+    CombatSystem::PopulateWeaponPickups(game);
 
     PropSystem::Populate(game);
     LightingSystem::PopulateLevelLights(game);
@@ -218,7 +221,7 @@ void StartLevel(Game& game)
     game.hoveredCellX = -1;
     game.hoveredCellY = -1;
 
-    SnapCameraToPlayer(game);
+    CameraSystem::Snap(game, GetScreenWidth(), GetScreenHeight());
     EnterState(game, GameState::PLAYING);
 }
 
@@ -245,9 +248,21 @@ void AdvanceLevel(Game& game)
 
 void UpdatePlaying(Game& game, float deltaTime)
 {
-    // The camera is refreshed first: CombatSystem unprojects the cursor through
-    // this frame's camera, so it must already be the camera we render with.
-    UpdateCameraFollow(game, deltaTime);
+    // Camera, aim picking and drawing share one immutable frame snapshot.
+    if (game.renderBackend == RenderBackend::World3D)
+    {
+        game.aim = CameraSystem::PickGround(game, game.input.mouse);
+    }
+    else
+    {
+        const Vector2 mouseWorld = GetScreenToWorld2D(game.input.mouse, game.camera);
+        const Vector2 ground = ScreenToCartesian(mouseWorld);
+        game.aim.valid = true;
+        game.aim.point = Vector3{ ground.x, 0.0f, ground.y };
+        game.aim.groundPoint = game.aim.point;
+        game.aim.enemyIndex = -1;
+        game.aim.pickedHead = false;
+    }
 
     PlayerSystem::UpdatePlayer(game, deltaTime);
     CombatSystem::UpdateCombat(game, deltaTime);
@@ -255,10 +270,10 @@ void UpdatePlaying(Game& game, float deltaTime)
     ParticleSystem::UpdateParticles(game, deltaTime);       // Phase 5: effects tick
 
     // Mouse hover readout for the debug HUD.
-    const Vector2 mouseWorld = GetScreenToWorld2D(GetMousePosition(), game.camera);
-    const Vector2 hovered    = ScreenToCartesian(mouseWorld);
-    const int hoveredX = static_cast<int>(std::floor(hovered.x));
-    const int hoveredY = static_cast<int>(std::floor(hovered.y));
+    const Vector2 hovered{ game.aim.groundPoint.x, game.aim.groundPoint.z };
+    int hoveredX = -1;
+    int hoveredY = -1;
+    World3D::CellAt(hovered, hoveredX, hoveredY);
 
     if (hoveredX >= 0 && hoveredX < game.mapWidth &&
         hoveredY >= 0 && hoveredY < game.mapHeight)
@@ -291,19 +306,19 @@ void UpdatePlaying(Game& game, float deltaTime)
     }
 
     // --- Debug / QA shortcuts ------------------------------------------------
-    if (IsKeyPressed(KEY_R))
+    if (game.input.rebuildPressed)
     {
         StartLevel(game);                       // rebuild the current level
     }
-    else if (IsKeyPressed(KEY_G))
+    else if (game.input.previewGameOverPressed)
     {
         EnterState(game, GameState::GAME_OVER); // preview the loss screen
     }
-    else if (IsKeyPressed(KEY_V))
+    else if (game.input.previewVictoryPressed)
     {
         EnterState(game, GameState::VICTORY);   // preview the win screen
     }
-    else if (IsKeyPressed(KEY_ESCAPE))
+    else if (game.input.menuPressed)
     {
         EnterState(game, GameState::MAIN_MENU);
     }
@@ -340,28 +355,6 @@ void SubmitExitBeacon(const Game& game)
     });
 }
 
-/// Highlights the tile under the cursor (debug aid, same depth convention).
-void SubmitHoverHighlight(const Game& game)
-{
-    if (game.hoveredCellX < 0 || game.hoveredCellY < 0)
-    {
-        return;
-    }
-
-    Renderer& renderer = const_cast<Game&>(game).renderer;
-
-    const Vector2 cell{ static_cast<float>(game.hoveredCellX) + 0.5f,
-                        static_cast<float>(game.hoveredCellY) + 0.5f };
-    const Vector2 screen = CartesianToScreen(cell);
-    const float   depth  = IsometricMath::CartesianToIsometric(cell).y + 0.02f;
-
-    renderer.Submit(depth, [screen]()
-    {
-        const IsoDiamond diamond = MakeDiamond(screen, kTileWidth * 0.44f, kTileHeight * 0.44f);
-        DrawDiamondOutline(diamond, 1.0f, Fade(kColorAccent, 0.7f));
-    });
-}
-
 /**
  * @brief Pushes the whole world into the Y-sort queue.
  *
@@ -381,14 +374,85 @@ void DrawPlayingScene(const Game& game, const LightingSystem& lighting)
 
     MapRenderer::RenderMap(game);
     PropSystem::Render(game);
-    SubmitHoverHighlight(game);
     SubmitExitBeacon(game);              // Phase 5: the level goal, now visible
+    CombatSystem::RenderWeaponPickups(game);
     CombatSystem::RenderBullets(game);
     EnemySystem::RenderEnemies(game);    // Phase 4: enemies sorted with the world
     PlayerSystem::RenderPlayer(game);
+    EnemySystem::RenderDeathPieces(game);
     ParticleSystem::RenderParticles(game); // Phase 5: effects on top of their tile
 
     renderer.Flush();
+}
+
+void DrawDiagnostic3D(const Game& game)
+{
+    const int minX = std::max(0, static_cast<int>(std::floor(game.player.pos.x - 25.0f)));
+    const int maxX = std::min(game.mapWidth - 1, static_cast<int>(std::ceil(game.player.pos.x + 25.0f)));
+    const int minY = std::max(0, static_cast<int>(std::floor(game.player.pos.y - 25.0f)));
+    const int maxY = std::min(game.mapHeight - 1, static_cast<int>(std::ceil(game.player.pos.y + 25.0f)));
+
+    BeginMode3D(game.camera3D);
+    if (g_scene3D.IsAvailable())
+    {
+        g_scene3D.DrawMap();
+    }
+    else
+    {
+        for (int y = minY; y <= maxY; ++y)
+        {
+            for (int x = minX; x <= maxX; ++x)
+            {
+                const int tile = TileAt(game, x, y);
+                const Vector3 center{ static_cast<float>(x) + 0.5f,
+                                      -0.035f,
+                                      static_cast<float>(y) + 0.5f };
+                if (tile == kTileFloor)
+                {
+                    const Color floor = ((x + y) % 2 == 0)
+                        ? Color{ 62, 68, 82, 255 }
+                        : Color{ 55, 60, 73, 255 };
+                    DrawCubeV(center, Vector3{ 0.98f, 0.07f, 0.98f }, floor);
+                }
+                else if (tile == kTileWall)
+                {
+                    DrawCubeV(Vector3{ center.x, World3D::kInitialWallHeight * 0.5f, center.z },
+                              Vector3{ 1.0f, World3D::kInitialWallHeight, 1.0f },
+                              Color{ 142, 151, 171, 255 });
+                }
+            }
+        }
+    }
+
+    for (const Enemy& enemy : game.enemies)
+    {
+        if (enemy.active)
+        {
+            DrawCubeV(Vector3{ enemy.pos.x, 0.6f, enemy.pos.y },
+                      Vector3{ 0.42f, 1.2f, 0.42f }, Color{ 204, 56, 64, 255 });
+        }
+    }
+    DrawCubeV(Vector3{ game.player.pos.x, 0.6f, game.player.pos.y },
+              Vector3{ 0.45f, 1.2f, 0.45f }, Color{ 72, 145, 242, 255 });
+    DrawCubeV(Vector3{ game.levelExit.x, 0.35f, game.levelExit.y },
+              Vector3{ 0.12f, 0.7f, 0.12f }, kColorExit);
+
+    const Vector3 axisOrigin{ game.player.pos.x, 0.02f, game.player.pos.y };
+    DrawLine3D(axisOrigin, Vector3{ axisOrigin.x + 1.0f, axisOrigin.y, axisOrigin.z },
+               Color{ 255, 80, 80, 255 });
+    DrawLine3D(axisOrigin, Vector3{ axisOrigin.x, axisOrigin.y + 1.0f, axisOrigin.z },
+               Color{ 96, 220, 255, 255 });
+    DrawLine3D(axisOrigin, Vector3{ axisOrigin.x, axisOrigin.y, axisOrigin.z + 1.0f },
+               Color{ 104, 255, 140, 255 });
+    EndMode3D();
+}
+
+void DrawPlayingHud(const Game& game, const LightingSystem& lighting);
+
+void DrawWorld3DFrame(const Game& game, const LightingSystem& lighting)
+{
+    DrawDiagnostic3D(game);
+    DrawPlayingHud(game, lighting);
 }
 
 // -----------------------------------------------------------------------------
@@ -409,21 +473,25 @@ void DrawMainMenu(const Game& game)
     DrawCenteredText(title, centerX, static_cast<int>(titleY + bob), 72, kColorAccent);
     DrawCenteredText(subtitle, centerX, titleY + 78, 20, kColorTextDim);
 
-    DrawCenteredText("WASD - move", centerX, titleY + 150, 20, kColorText);
-    DrawCenteredText("Left mouse - shoot", centerX, titleY + 180, 20, kColorText);
-    DrawCenteredText("Reach the cyan beacon to clear the level", centerX, titleY + 210, 20, kColorText);
-    DrawCenteredText("Survive all 10 levels to win", centerX, titleY + 240, 20, kColorTextDim);
+    DrawCenteredText("W/A/S/D - move up / left / down / right", centerX, titleY + 150, 20, kColorText);
+    DrawCenteredText("Mouse aim and fire   |   1-4 switch weapons", centerX, titleY + 180, 20, kColorText);
+    DrawCenteredText("5 - medkit restores 40 HP (3 per run)", centerX, titleY + 210, 20, kColorText);
+    DrawCenteredText("Reach the cyan beacon to clear the level", centerX, titleY + 250, 20, kColorText);
+    DrawCenteredText("Survive all 10 levels to win", centerX, titleY + 280, 20, kColorTextDim);
 
     // Blinking prompt.
     if (static_cast<int>(game.stateTime * 2.0f) % 2 == 0)
     {
-        DrawCenteredText("Press ENTER or SPACE to start", centerX, titleY + 310, 24, kColorAccent);
+        DrawCenteredText("Press ENTER or SPACE to start", centerX, titleY + 320, 24, kColorAccent);
     }
 }
 
 void DrawEndScreen(const Game& game, const LightingSystem& lighting, bool victory)
 {
-    DrawPlayingScene(game, lighting);   // frozen world behind the scrim
+    if (game.renderBackend == RenderBackend::World3D)
+        DrawDiagnostic3D(game);
+    else
+        DrawPlayingScene(game, lighting);
 
     const int centerX = GetScreenWidth() / 2;
     const int centerY = GetScreenHeight() / 2;
@@ -505,9 +573,10 @@ void DrawPlayingHud(const Game& game, const LightingSystem& lighting)
     DrawLine(0, 76, 720, 76, Fade(kColorAccent, 0.45f));
 
     DrawText(kWindowTitle, 18, 14, 20, kColorText);
-    DrawText(TextFormat("state %s   level %d/%d   map %dx%d",
+    DrawText(TextFormat("state %s   level %d/%d   map %dx%d   %s",
                         StateName(game.state), game.currentLevel, kTotalLevels,
-                        game.mapWidth, game.mapHeight),
+                        game.mapWidth, game.mapHeight,
+                        game.renderBackend == RenderBackend::World3D ? "3D" : "2D"),
              18, 44, 18, kColorAccent);
 
     // ---- player readout -----------------------------------------------------
@@ -519,6 +588,8 @@ void DrawPlayingHud(const Game& game, const LightingSystem& lighting)
 
     // ---- Phase 5: health bar ------------------------------------------------
     DrawHealthBar(game, 18, 96);
+    DrawText(TextFormat("MEDKIT x%d  [5]", game.player.medPacks),
+             300, 98, 18, kColorAccent);
 
     // ---- system readout -----------------------------------------------------
     const bool lit = lighting.IsAvailable();
@@ -533,6 +604,23 @@ void DrawPlayingHud(const Game& game, const LightingSystem& lighting)
                         (lit ? "on" : "off")),
              736, 144, 18, kColorTextDim);
 
+    const int selected = static_cast<int>(game.weapons.selected);
+    const char* slotNames[] = { "SLINGSHOT", "SHOTGUN", "MARKSMAN", "GATLING" };
+    const int slotX = 18;
+    const int slotY = GetScreenHeight() - 94;
+    for (int i = 0; i < 4; ++i)
+    {
+        const int x = slotX + i * 174;
+        const bool active = i == selected;
+        const Color edge = active ? kColorAccent : Fade(kColorTextDim, 0.65f);
+        const char* ammo = (i == 0) ? "INF" :
+            TextFormat("%d", game.weapons.ammo[static_cast<std::size_t>(i)]);
+        DrawRectangle(x, slotY, 162, 30, Fade(kColorBackground, 0.90f));
+        DrawRectangleLines(x, slotY, 162, 30, edge);
+        DrawText(TextFormat("%d  %s  %s", i + 1, slotNames[i], ammo),
+                 x + 8, slotY + 8, 14, active ? kColorAccent : kColorTextDim);
+    }
+
     // ---- hover readout + controls ------------------------------------------
     if (game.hoveredCellX >= 0)
     {
@@ -542,8 +630,8 @@ void DrawPlayingHud(const Game& game, const LightingSystem& lighting)
                  18, GetScreenHeight() - 58, 20, kColorTextDim);
     }
 
-    DrawText("WASD move   |   Left click shoot   |   Walk onto the cyan beacon to advance   |   R rebuild   G lose   V win   ESC menu",
-             18, GetScreenHeight() - 30, 18, kColorTextDim);
+    DrawText("WASD move  |  Mouse aim/fire  |  1-4 weapons  |  5 medkit +40 HP  |  Reach beacon  |  R rebuild  ESC menu",
+             18, GetScreenHeight() - 30, 16, kColorTextDim);
 }
 
 // -----------------------------------------------------------------------------
@@ -554,6 +642,12 @@ void DrawPlayingHud(const Game& game, const LightingSystem& lighting)
 /// screen, then the HUD on top. Mirrors the LightingSystem.hpp pipeline.
 void DrawLitPlayingFrame(const Game& game)
 {
+    if (game.renderBackend == RenderBackend::World3D)
+    {
+        DrawWorld3DFrame(game, g_lighting);
+        return;
+    }
+
     // Phase 5 fix: the world MUST be rendered into the lighting render target
     // first. Without this BeginScene() the scene was drawn straight into the
     // default framebuffer and then immediately painted over by the still-black
@@ -571,23 +665,46 @@ void DrawLitPlayingFrame(const Game& game)
 
 }   // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "--renderer=3d") == 0)
+            g_game.renderBackend = RenderBackend::World3D;
+        else if (std::strcmp(argv[i], "--renderer=2d") == 0)
+            g_game.renderBackend = RenderBackend::Legacy2D;
+    }
+
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(1280, 720, kWindowTitle);
+    SetExitKey(KEY_NULL);
+    HideCursor();
     SetTargetFPS(60);
 
     // Phase 3.F: shader + scene target. Degrades to an unlit RenderTexture
     // (never crashes) when assets/shaders/lighting.fs is missing.
     g_lighting.Initialize();
+    g_scene3D.Initialize();
 
     PlayerSystem::LoadAssets(g_game);
+    EnemySystem::LoadAssets(g_game);
+    CombatSystem::LoadAssets(g_game);
 
     while (g_game.running && !WindowShouldClose())
     {
         // Tick time even while paused: END stands for an exclusive step flag,
         // TICK for "the world must keep being simulated".
         const float deltaTime = std::min(GetFrameTime(), kMaxFrameTime);
+        g_game.input = CaptureInputFrame();
+        if (g_game.input.toggleRendererPressed)
+        {
+            g_game.renderBackend = g_game.renderBackend == RenderBackend::Legacy2D
+                ? RenderBackend::World3D : RenderBackend::Legacy2D;
+        }
+        if (g_game.camera3DReady)
+        {
+            CameraSystem::Update(g_game, deltaTime, GetScreenWidth(), GetScreenHeight());
+        }
         g_game.stateTime += deltaTime;
 
         // ---- state:specific logic (before drawing) --------------------------
@@ -598,6 +715,7 @@ int main()
                 if (g_game.stateTime >= kBootScreenTime)
                 {
                     g_game.currentLevel = 1;
+                    ResetRunInventory(g_game);
                     StartLevel(g_game);
                 }
                 break;
@@ -606,9 +724,10 @@ int main()
             case GameState::MAIN_MENU:
             {
                 // Existing level shown behind the title; rebuild for level 1.
-                if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
+                if (g_game.input.startPressed)
                 {
                     g_game.currentLevel = 1;
+                    ResetRunInventory(g_game);
                     StartLevel(g_game);
                 }
                 break;
@@ -623,7 +742,7 @@ int main()
             case GameState::GAME_OVER:
             case GameState::VICTORY:
             {
-                if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
+                if (g_game.input.startPressed)
                 {
                     EnterState(g_game, GameState::MAIN_MENU);
                 }
@@ -668,11 +787,16 @@ int main()
             }
         }
 
+        DrawCrosshair(g_game);
         EndDrawing();
     }
 
+    EnemySystem::UnloadAssets(g_game);
+    CombatSystem::UnloadAssets(g_game);
     PlayerSystem::UnloadAssets(g_game);
+    g_scene3D.Shutdown();
     g_lighting.Shutdown();
+    ShowCursor();
     CloseWindow();
     return 0;
 }

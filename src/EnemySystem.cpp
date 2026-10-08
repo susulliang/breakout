@@ -19,6 +19,7 @@
 #include "EnemySystem.hpp"
 
 #include "IsometricMath.hpp"
+#include "GridAlgorithms.hpp"
 #include "ParticleSystem.hpp"
 #include "World.hpp"
 
@@ -29,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace {
@@ -41,6 +43,13 @@ namespace {
 constexpr int kBurstHitFlesh = 8;
 constexpr int kBurstDeath    = 26;
 const Color   kBloodColor    = Color{ 196, 48, 52, 255 };
+
+constexpr int   kEnemyFrameCount = 4;
+constexpr float kEnemyFrameSize  = 64.0f;
+constexpr float kEnemySpriteScale = 0.75f;
+constexpr float kDeathPieceLifetime = 4.8f;
+constexpr float kDeathPieceFadeStart = 3.0f;
+constexpr float kDeathGravity = 46.0f;
 
 // -----------------------------------------------------------------------------
 //  Phase 5 fix: contact-damage budget.
@@ -123,81 +132,6 @@ void GetDifficultyForLevel(int level, int& spawnCount, float& speedMul, float& h
 }
 
 // -----------------------------------------------------------------------------
-//  Bresenham line of sight: walk from (x0, y0) to (x1, y1) on the grid.
-//  Returns true if the line stays entirely within non-wall cells (kTileFloor)
-//  from enemy position (exclusive) to player position (exclusive).
-//  If the start position itself is a wall tile, we skip the check.
-// -----------------------------------------------------------------------------
-bool LineOfSight(const Game& game, int x0, int y0, int x1, int y1)
-{
-    const int dx = std::abs(x1 - x0);
-    const int dy = std::abs(y1 - y0);
-
-    const int sx = (x0 < x1) ? 1 : -1;
-    const int sy = (y0 < y1) ? 1 : -1;
-
-    int x = x0;
-    int y = y0;
-
-    int err = dx - dy;
-
-    // Walk in steps. Each step: check the cell BEFORE entering it (don't check the target itself).
-    while (x != x1 || y != y1)
-    {
-        // The current cell: if we're not at the start and not at the end, must be walkable.
-        if (x != x0 && y != y0 && x != x1 && y != y1)
-        {
-            const int tile = TileAt(game, x, y);
-            if (tile != kTileFloor)
-            {
-                return false;
-            }
-        }
-
-        const int e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; x += sx; }
-        if (e2 <  dx) { err += dx; y += sy; }
-    }
-
-    return true;
-}
-
-// -----------------------------------------------------------------------------
-//  AABB tile-sliding movement along one axis. Same pattern as PlayerSystem.
-// -----------------------------------------------------------------------------
-static bool BlockedAlongX(const Game& game, float targetX, float centerY, float radius)
-{
-    const int col = static_cast<int>(std::floor(targetX + radius));
-    if (col < 0 || col >= game.mapWidth) { return true; }
-
-    for (float yOff = -radius; yOff <= radius; yOff += 2.0f * radius)
-    {
-        const int row = static_cast<int>(std::floor(centerY + yOff));
-        if (row < 0 || row >= game.mapHeight) { return true; }
-
-        const int tile = TileAt(game, col, row);
-        if (tile == kTileWall) return true;
-    }
-    return false;
-}
-
-static bool BlockedAlongY(const Game& game, float targetY, float centerX, float radius)
-{
-    const int row = static_cast<int>(std::floor(targetY + radius));
-    if (row < 0 || row >= game.mapHeight) { return true; }
-
-    for (float xOff = -radius; xOff <= radius; xOff += 2.0f * radius)
-    {
-        const int col = static_cast<int>(std::floor(centerX + xOff));
-        if (col < 0 || col >= game.mapWidth) { return true; }
-
-        const int tile = TileAt(game, col, row);
-        if (tile == kTileWall) return true;
-    }
-    return false;
-}
-
-// -----------------------------------------------------------------------------
 //  Random helpers for population
 // -----------------------------------------------------------------------------
 int RandomInt(std::mt19937& rng, int lo, int hi)
@@ -206,7 +140,160 @@ int RandomInt(std::mt19937& rng, int lo, int hi)
     return dist(rng);
 }
 
+DeathPiece* FindFreeDeathPiece(Game& game)
+{
+    for (DeathPiece& piece : game.deathPieces)
+        if (!piece.active) return &piece;
+    return nullptr;
+}
+
+void SpawnDeathPieces(Game& game, const Enemy& enemy, int facing)
+{
+    static std::mt19937 rng{ 0xD1E5EEDu };
+    std::uniform_real_distribution<float> scatter(-1.7f, 1.7f);
+    std::uniform_real_distribution<float> lift(9.0f, 19.0f);
+    std::uniform_real_distribution<float> spin(-260.0f, 260.0f);
+    const int parts[] = { 0, 1, 2, 2, 3, 3 };
+
+    for (int part : parts)
+    {
+        DeathPiece* piece = FindFreeDeathPiece(game);
+        if (!piece) break;
+        piece->active = true;
+        piece->settled = false;
+        piece->spritePart = part;
+        piece->facing = facing;
+        piece->pos = enemy.pos;
+        piece->vel = Vector2{ scatter(rng), scatter(rng) };
+        piece->screenLift = lift(rng);
+        piece->verticalVelocity = lift(rng) * 1.2f;
+        piece->rotation = spin(rng) * 0.15f;
+        piece->rotationVelocity = spin(rng);
+        piece->scale = part == 1 ? 0.50f : (part == 0 ? 0.45f : 0.38f);
+        piece->age = 0.0f;
+    }
+}
+
+float DistanceToSegment(Vector2 point, Vector2 start, Vector2 end)
+{
+    const Vector2 segment{ end.x - start.x, end.y - start.y };
+    const float lengthSquared = segment.x * segment.x + segment.y * segment.y;
+    if (lengthSquared <= 1e-8f)
+    {
+        const Vector2 delta{ point.x - start.x, point.y - start.y };
+        return std::sqrt(delta.x * delta.x + delta.y * delta.y);
+    }
+    const float projection = std::max(0.0f, std::min(1.0f,
+        ((point.x - start.x) * segment.x + (point.y - start.y) * segment.y) /
+        lengthSquared));
+    const Vector2 closest{ start.x + segment.x * projection,
+                           start.y + segment.y * projection };
+    const Vector2 delta{ point.x - closest.x, point.y - closest.y };
+    return std::sqrt(delta.x * delta.x + delta.y * delta.y);
+}
+
+bool SegmentHitsEllipse(Vector2 start, Vector2 end, Vector2 center,
+                        float radiusX, float radiusY)
+{
+    const Vector2 normalizedStart{ (start.x - center.x) / radiusX,
+                                  (start.y - center.y) / radiusY };
+    const Vector2 normalizedEnd{ (end.x - center.x) / radiusX,
+                                (end.y - center.y) / radiusY };
+    return DistanceToSegment(Vector2{ 0.0f, 0.0f }, normalizedStart, normalizedEnd) <= 1.0f;
+}
+
 }   // namespace
+
+void EnemySystem::LoadAssets(Game& game)
+{
+    const std::string path = ResolveAssetPath("sprites/enemy.png");
+    if (!path.empty())
+    {
+        game.enemyTexture = LoadTexture(path.c_str());
+        TraceLog(LOG_INFO, "EnemySystem: sprite sheet loaded from %s", path.c_str());
+    }
+    if (game.enemyTexture.id == 0)
+    {
+        TraceLog(LOG_WARNING, "EnemySystem: assets/sprites/enemy.png unavailable, "
+                              "falling back to procedural enemy drawing");
+    }
+
+    const std::string partsPath = ResolveAssetPath("sprites/enemy_parts.png");
+    if (!partsPath.empty())
+    {
+        game.enemyPartsTexture = LoadTexture(partsPath.c_str());
+        TraceLog(LOG_INFO, "EnemySystem: fragment atlas loaded from %s", partsPath.c_str());
+    }
+}
+
+void EnemySystem::RenderDeathPieces(const Game& game)
+{
+    Renderer& renderer = const_cast<Game&>(game).renderer;
+    const bool hasAtlas = game.enemyPartsTexture.id != 0;
+    const Texture2D atlas = game.enemyPartsTexture;
+    for (const DeathPiece& piece : game.deathPieces)
+    {
+        if (!piece.active) continue;
+        const Vector2 screen = CartesianToScreen(piece.pos);
+        const float depth = IsometricMath::CartesianToIsometric(piece.pos).y + 0.035f;
+        const float lift = piece.screenLift;
+        const float alpha = piece.age <= kDeathPieceFadeStart ? 1.0f :
+            ClampFloat((kDeathPieceLifetime - piece.age) /
+                       (kDeathPieceLifetime - kDeathPieceFadeStart), 0.0f, 1.0f);
+        const int part = piece.spritePart;
+        const float scale = piece.scale;
+        const float rotation = piece.rotation;
+        const int facing = piece.facing;
+        renderer.Submit(depth, [screen, hasAtlas, atlas, part, scale, rotation,
+                                lift, alpha, facing]()
+        {
+            const Vector2 center{ screen.x, screen.y - lift };
+            if (hasAtlas)
+            {
+                const Rectangle source{ static_cast<float>(part) * 64.0f, 0.0f,
+                                        (facing < 0 ? -64.0f : 64.0f), 64.0f };
+                const float side = 64.0f * scale;
+                const Rectangle dest{ center.x, center.y - side * 0.5f, side, side };
+                DrawTexturePro(atlas, source, dest, Vector2{ side * 0.5f, side * 0.5f },
+                               rotation, Fade(WHITE, alpha));
+            }
+            else
+            {
+                const Color red = Fade(Color{ 190, 55, 63, 255 }, alpha);
+                if (part == 0)
+                    DrawEllipse(static_cast<int>(center.x), static_cast<int>(center.y),
+                                7.0f * scale, 5.0f * scale, red);
+                else if (part == 1)
+                    DrawRectanglePro(Rectangle{ center.x, center.y, 9.0f * scale,
+                                                15.0f * scale },
+                                     Vector2{ 4.5f * scale, 7.5f * scale }, rotation, red);
+                else
+                    DrawLineEx(Vector2{ center.x - 5.0f * scale, center.y },
+                               Vector2{ center.x + 5.0f * scale, center.y },
+                               3.0f * scale, red);
+            }
+        });
+    }
+}
+
+void EnemySystem::ResetDeathPieces(Game& game)
+{
+    for (DeathPiece& piece : game.deathPieces) piece.active = false;
+}
+
+void EnemySystem::UnloadAssets(Game& game)
+{
+    if (game.enemyTexture.id != 0)
+    {
+        UnloadTexture(game.enemyTexture);
+        game.enemyTexture = Texture2D{};
+    }
+    if (game.enemyPartsTexture.id != 0)
+    {
+        UnloadTexture(game.enemyPartsTexture);
+        game.enemyPartsTexture = Texture2D{};
+    }
+}
 
 void EnemySystem::PopulateEnemies(Game& game)
 {
@@ -247,7 +334,8 @@ void EnemySystem::PopulateEnemies(Game& game)
             const int tile = TileAt(game, cellX, cellY);
             if (tile != kTileFloor) { continue; }
 
-            const Vector2 candidate{ static_cast<float>(cellX), static_cast<float>(cellY) };
+            const Vector2 candidate{ static_cast<float>(cellX) + 0.5f,
+                                     static_cast<float>(cellY) + 0.5f };
 
             // Keepout: distance from player spawn.
             const Vector2 spawnDelta{ candidate.x - game.playerSpawn.x, candidate.y - game.playerSpawn.y };
@@ -280,6 +368,9 @@ void EnemySystem::PopulateEnemies(Game& game)
                 e.speed = speedMul;
                 e.state = EnemyState::IDLE;
                 e.radius = 0.3f;
+                e.hitRadius = 0.68f;
+                e.hitSlowTime = 0.0f;
+                e.knockbackVelocity = Vector2{ 0.0f, 0.0f };
                 placed.push_back(candidate);
                 ++game.enemyCount;
                 placedEnemy = true;
@@ -291,6 +382,32 @@ void EnemySystem::PopulateEnemies(Game& game)
 
 void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
 {
+    game.hitFeedbackTime = std::max(0.0f, game.hitFeedbackTime - deltaTime);
+    for (DeathPiece& piece : game.deathPieces)
+    {
+        if (!piece.active) continue;
+        piece.age += deltaTime;
+        piece.rotation += piece.rotationVelocity * deltaTime;
+        piece.pos.x += piece.vel.x * deltaTime;
+        piece.pos.y += piece.vel.y * deltaTime;
+        piece.vel.x *= std::max(0.0f, 1.0f - deltaTime * 2.5f);
+        piece.vel.y *= std::max(0.0f, 1.0f - deltaTime * 2.5f);
+
+        if (!piece.settled)
+        {
+            piece.screenLift += piece.verticalVelocity * deltaTime;
+            piece.verticalVelocity -= kDeathGravity * deltaTime;
+            if (piece.screenLift <= 0.0f)
+            {
+                piece.screenLift = 0.0f;
+                piece.verticalVelocity = 0.0f;
+                piece.settled = true;
+                piece.rotationVelocity *= 0.18f;
+            }
+        }
+        if (piece.age >= kDeathPieceLifetime) piece.active = false;
+    }
+
     // Phase 5 fix: tick the contact-damage immunity window down once per frame,
     // before any collision test below can refill it.
     if (game.player.hurtCooldown > 0.0f)
@@ -307,13 +424,24 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
     {
         if (!e.active) continue;
 
+        e.hitSlowTime = std::max(0.0f, e.hitSlowTime - deltaTime);
+        const float knockbackStepX = e.knockbackVelocity.x * deltaTime;
+        const float knockbackStepY = e.knockbackVelocity.y * deltaTime;
+        MoveGroundWithWallSlide(game, e.pos,
+                                Vector2{ knockbackStepX, knockbackStepY }, e.radius);
+        const float knockbackDamping = std::max(0.0f, 1.0f - deltaTime * 8.0f);
+        e.knockbackVelocity.x *= knockbackDamping;
+        e.knockbackVelocity.y *= knockbackDamping;
+
         // Bresenham line-of-sight check.
         const int startCellX = static_cast<int>(std::floor(e.pos.x));
         const int startCellY = static_cast<int>(std::floor(e.pos.y));
         const int endCellX   = static_cast<int>(std::floor(game.player.pos.x));
         const int endCellY   = static_cast<int>(std::floor(game.player.pos.y));
 
-        const bool hasLOS = LineOfSight(game, startCellX, startCellY, endCellX, endCellY);
+        const bool hasLOS = GridAlgorithms::HasFloorLineOfSight(
+            game.gridMap, game.mapWidth, game.mapHeight,
+            startCellX, startCellY, endCellX, endCellY);
 
         if (hasLOS)
         {
@@ -334,19 +462,11 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
             const Vector2 norm{ dir.x / len, dir.y / len };
 
             // Move along X first, then Y (wall-sliding).
-            const float speed = e.speed * deltaTime;
+            const float staggerScale = e.hitSlowTime > 0.0f ? 0.32f : 1.0f;
+            const float speed = e.speed * staggerScale * deltaTime;
 
-            const float targetX = e.pos.x + norm.x * speed;
-            if (!BlockedAlongX(game, targetX, e.pos.y, e.radius))
-            {
-                e.pos.x = targetX;
-            }
-
-            const float targetY = e.pos.y + norm.y * speed;
-            if (!BlockedAlongY(game, targetY, e.pos.x, e.radius))
-            {
-                e.pos.y = targetY;
-            }
+            MoveGroundWithWallSlide(game, e.pos,
+                                    Vector2{ norm.x * speed, norm.y * speed }, e.radius);
         }
     }
 
@@ -371,17 +491,11 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
                 const float px = dx * invDist * push;
                 const float py = dy * invDist * push;
 
-                // Push away; clamp to avoid pushing into walls.
-                game.enemies[i].pos.x -= px;
-                game.enemies[i].pos.y -= py;
-                game.enemies[j].pos.x += px;
-                game.enemies[j].pos.y += py;
-
-                // Clamp to bounds.
-                game.enemies[i].pos.x = std::max(0.0f, std::min(game.enemies[i].pos.x, static_cast<float>(game.mapWidth - 1)));
-                game.enemies[i].pos.y = std::max(0.0f, std::min(game.enemies[i].pos.y, static_cast<float>(game.mapHeight - 1)));
-                game.enemies[j].pos.x = std::max(0.0f, std::min(game.enemies[j].pos.x, static_cast<float>(game.mapWidth - 1)));
-                game.enemies[j].pos.y = std::max(0.0f, std::min(game.enemies[j].pos.y, static_cast<float>(game.mapHeight - 1)));
+                // Separation is movement too; resolve each axis against walls.
+                Enemy& first = game.enemies[i];
+                Enemy& second = game.enemies[j];
+                MoveGroundWithWallSlide(game, first.pos, Vector2{ -px, -py }, first.radius);
+                MoveGroundWithWallSlide(game, second.pos, Vector2{ px, py }, second.radius);
             }
         }
     }
@@ -404,12 +518,7 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
             const float px = dx * invDist * push;
             const float py = dy * invDist * push;
 
-            e.pos.x += px;
-            e.pos.y += py;
-
-            // Clamp to map bounds.
-            e.pos.x = std::max(0.0f, std::min(e.pos.x, static_cast<float>(game.mapWidth - 1)));
-            e.pos.y = std::max(0.0f, std::min(e.pos.y, static_cast<float>(game.mapHeight - 1)));
+            MoveGroundWithWallSlide(game, e.pos, Vector2{ px, py }, e.radius);
 
             // Phase 5 fix: the guard above already proved a real radius overlap
             // (dist < e.radius + player.radius), so this is genuine contact - but
@@ -435,16 +544,36 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
         {
             if (!e.active) continue;
 
-            const float dx = e.pos.x - b.pos.x;
-            const float dy = e.pos.y - b.pos.y;
-            const float dist = std::sqrt(dx * dx + dy * dy);
+            const float dist = DistanceToSegment(e.pos, b.previousPos, b.pos);
+            const Vector2 enemyScreen = CartesianToScreen(e.pos);
+            const Vector2 bulletStartScreen = CartesianToScreen(b.previousPos);
+            const Vector2 bulletEndScreen = CartesianToScreen(b.pos);
+            const bool silhouetteHit = SegmentHitsEllipse(
+                bulletStartScreen, bulletEndScreen,
+                Vector2{ enemyScreen.x, enemyScreen.y - 23.0f }, 19.0f, 26.0f);
 
-            if (dist < b.radius + e.radius)
+            if (dist < b.radius + e.hitRadius || silhouetteHit)
             {
                 const Vector2 impact = b.pos;   // capture before the bullet dies
                 b.active = false;
 
-                e.hp -= 1.0f;
+                const bool headshot = SegmentHitsEllipse(
+                    bulletStartScreen, bulletEndScreen,
+                    Vector2{ enemyScreen.x, enemyScreen.y - 37.0f }, 10.0f, 9.0f);
+                const float damage = b.damage * (headshot ? 4.0f : 1.0f);
+                e.hp -= damage;
+                e.hitSlowTime = 1.0f;
+                e.knockbackVelocity.x += (b.vel.x / std::max(1e-4f, b.speed)) * 3.2f;
+                e.knockbackVelocity.y += (b.vel.y / std::max(1e-4f, b.speed)) * 3.2f;
+                const float knockbackSpeed = VectorLength(e.knockbackVelocity);
+                if (knockbackSpeed > 4.5f)
+                {
+                    const float scale = 4.5f / knockbackSpeed;
+                    e.knockbackVelocity.x *= scale;
+                    e.knockbackVelocity.y *= scale;
+                }
+                game.hitFeedbackTime = headshot ? 0.34f : 0.19f;
+                game.hitFeedbackHeadshot = headshot;
                 if (e.hp <= 0.0f)
                 {
                     e.active = false;
@@ -452,6 +581,9 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
 
                     // Phase 5: a kill throws a bigger burst than a plain hit.
                     ParticleSystem::SpawnExplosion(game, e.pos, kBurstDeath, kBloodColor);
+                    const float facingBias = (game.player.pos.x - e.pos.x) -
+                                             (game.player.pos.y - e.pos.y);
+                    SpawnDeathPieces(game, e, facingBias < 0.0f ? -1 : 1);
                 }
                 else
                 {
@@ -480,26 +612,52 @@ void EnemySystem::RenderEnemies(const Game& game)
 
         const Vector2 screen = CartesianToScreen(e.pos);
         const float depth = IsometricMath::CartesianToIsometric(e.pos).y + 0.02f;
+        const bool hasTexture = game.enemyTexture.id != 0;
+        const Texture2D texture = game.enemyTexture;
+        const float phase = game.stateTime * 7.0f + e.pos.x * 2.3f + e.pos.y * 4.1f;
+        const int frame = e.state == EnemyState::CHASE
+            ? 1 + static_cast<int>(phase) % (kEnemyFrameCount - 1)
+            : 0;
+        const float facingBias = (game.player.pos.x - e.pos.x) - (game.player.pos.y - e.pos.y);
+        const int facing = (facingBias < 0.0f) ? -1 : 1;
+        const bool stunned = e.hitSlowTime > 0.0f;
+        const Color tint = stunned
+            ? Color{ 255, 220, 220, 255 } : WHITE;
 
-        renderer.Submit(depth, [screen]()
+        renderer.Submit(depth, [screen, hasTexture, texture, frame, facing, tint, stunned]()
         {
-            const Color red     = Color{ 220, 60, 60, 255 };
-            const Color darkRed = Color{ 160, 40, 40, 255 };
-
             // Contact shadow first (same convention as the props and the player).
             DrawContactShadow(screen, 20.0f, 10.0f, 0.35f);
 
-            // Simple red box centred on the diamond.
-            const float halfW = kTileWidth * 0.35f;
-            const float halfH = kTileHeight * 0.35f;
-            DrawRectangleRounded(
-                Rectangle{ screen.x - halfW, screen.y - halfH - 20.0f, halfW * 2.0f, halfH * 2.0f },
-                0.2f, 3, red
-            );
-            DrawRectangleRounded(
-                Rectangle{ screen.x - halfW + 3.0f, screen.y - halfH - 17.0f, halfW * 2.0f - 6.0f, halfH * 2.0f - 6.0f },
-                0.2f, 2, darkRed
-            );
+            if (hasTexture)
+            {
+                const float sourceWidth = (facing < 0) ? -kEnemyFrameSize : kEnemyFrameSize;
+                const Rectangle source{ static_cast<float>(frame) * kEnemyFrameSize, 0.0f,
+                                        sourceWidth, kEnemyFrameSize };
+                const float side = kEnemyFrameSize * kEnemySpriteScale;
+                const Rectangle dest{ screen.x, screen.y, side, side };
+                const Vector2 origin{ side * 0.5f, side };
+                DrawTexturePro(texture, source, dest, origin, 0.0f, tint);
+            }
+            else
+            {
+                const Color red     = stunned
+                    ? Color{ 255, 112, 112, 255 } : Color{ 220, 60, 60, 255 };
+                const Color darkRed = Color{ 160, 40, 40, 255 };
+                const float halfW = kTileWidth * 0.35f;
+                const float halfH = kTileHeight * 0.35f;
+
+                DrawRectangleRounded(
+                    Rectangle{ screen.x - halfW, screen.y - halfH - 20.0f,
+                               halfW * 2.0f, halfH * 2.0f },
+                    0.2f, 3, red
+                );
+                DrawRectangleRounded(
+                    Rectangle{ screen.x - halfW + 3.0f, screen.y - halfH - 17.0f,
+                               halfW * 2.0f - 6.0f, halfH * 2.0f - 6.0f },
+                    0.2f, 2, darkRed
+                );
+            }
         });
     }
 }

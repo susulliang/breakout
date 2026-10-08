@@ -143,27 +143,54 @@ void DrawWireFence(Vector2 base, float scale, float variant)
 {
     const float halfWidth = 28.0f * scale;
     const float height    = 40.0f * scale;
-    const float left      = base.x - halfWidth;
-    const float right     = base.x + halfWidth;
-    const float bottom    = base.y;
-    const float top       = base.y - height;
+    const float halfDepth = halfWidth * 0.5f;
+    const Vector2 bottomLeft{ base.x - halfWidth, base.y - halfDepth };
+    const Vector2 bottomRight{ base.x + halfWidth, base.y + halfDepth };
+    const Vector2 topLeft{ bottomLeft.x, bottomLeft.y - height };
+    const Vector2 topRight{ bottomRight.x, bottomRight.y - height };
     const Color mesh      = ShadeColor(kMetalLight, variant * 0.06f);
 
-    // Dark backing so the mesh reads against the floor.
-    DrawRectangleRec(Rectangle{ left, top, right - left, height }, Fade(Color{ 18, 22, 30, 255 }, 0.35f));
+    // The fence footprint follows the screen-space projection of one grid axis.
+    DrawQuad(topLeft, topRight, bottomRight, bottomLeft,
+             Fade(Color{ 18, 22, 30, 255 }, 0.35f));
 
-    // Crossed diagonals = wire mesh.
-    const float spacing = 9.0f * scale;
-    for (float offset = -height; offset <= (right - left) + height; offset += spacing)
+    const auto pointOnPanel = [&](float across, float up)
     {
-        DrawLineEx(Vector2{ left + offset, bottom }, Vector2{ left + offset + height, top }, 1.0f, mesh);
-        DrawLineEx(Vector2{ left + offset, top }, Vector2{ left + offset + height, bottom }, 1.0f, mesh);
+        const Vector2 lower = Lerp2(bottomLeft, bottomRight, across);
+        const Vector2 upper = Lerp2(topLeft, topRight, across);
+        return Lerp2(lower, upper, up);
+    };
+
+    constexpr int kMeshColumns = 7;
+    constexpr int kMeshRows = 5;
+    for (int column = 1; column < kMeshColumns; ++column)
+    {
+        const float across = static_cast<float>(column) / static_cast<float>(kMeshColumns);
+        DrawLineEx(pointOnPanel(across, 0.0f), pointOnPanel(across, 1.0f), 0.8f * scale, mesh);
+    }
+    for (int row = 1; row < kMeshRows; ++row)
+    {
+        const float up = static_cast<float>(row) / static_cast<float>(kMeshRows);
+        DrawLineEx(pointOnPanel(0.0f, up), pointOnPanel(1.0f, up), 0.8f * scale, mesh);
+    }
+    for (int row = 0; row < kMeshRows; ++row)
+    {
+        for (int column = 0; column < kMeshColumns; ++column)
+        {
+            const float u0 = static_cast<float>(column) / static_cast<float>(kMeshColumns);
+            const float u1 = static_cast<float>(column + 1) / static_cast<float>(kMeshColumns);
+            const float v0 = static_cast<float>(row) / static_cast<float>(kMeshRows);
+            const float v1 = static_cast<float>(row + 1) / static_cast<float>(kMeshRows);
+            DrawLineEx(pointOnPanel(u0, v0), pointOnPanel(u1, v1), 0.7f * scale, mesh);
+            DrawLineEx(pointOnPanel(u1, v0), pointOnPanel(u0, v1), 0.7f * scale, mesh);
+        }
     }
 
-    // Posts + rail.
-    DrawRectangleRec(Rectangle{ left, top, 3.0f * scale, height }, kMetalMid);
-    DrawRectangleRec(Rectangle{ right - 3.0f * scale, top, 3.0f * scale, height }, kMetalMid);
-    DrawRectangleRec(Rectangle{ left, top, right - left, 2.5f * scale }, kMetalMid);
+    // Posts and rails retain the same isometric footprint as the mesh.
+    DrawLineEx(bottomLeft, topLeft, 3.0f * scale, kMetalMid);
+    DrawLineEx(bottomRight, topRight, 3.0f * scale, kMetalMid);
+    DrawLineEx(topLeft, topRight, 2.5f * scale, kMetalLight);
+    DrawLineEx(bottomLeft, bottomRight, 2.0f * scale, kMetalMid);
 }
 
 void DrawPartsTable(Vector2 base, float scale, float variant)
@@ -345,7 +372,8 @@ void PropSystem::Populate(Game& game)
                 continue;
             }
 
-            const Vector2 candidate{ static_cast<float>(cellX), static_cast<float>(cellY) };
+            const Vector2 candidate{ static_cast<float>(cellX) + 0.5f,
+                                     static_cast<float>(cellY) + 0.5f };
 
             // Keep the spawn / exit tiles and the room centre readable.
             const Vector2 roomCentre{ room.centerX, room.centerY };

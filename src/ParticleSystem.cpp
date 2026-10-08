@@ -57,7 +57,8 @@ Particle* FindFreeSlot(Game& game)
 }
 }   // namespace
 
-void ParticleSystem::SpawnExplosion(Game& game, Vector2 cartesianPos, int count, Color color)
+void ParticleSystem::SpawnExplosion(Game& game, Vector2 cartesianPos, int count, Color color,
+                                    float screenLift)
 {
     if (count <= 0)
     {
@@ -84,6 +85,7 @@ void ParticleSystem::SpawnExplosion(Game& game, Vector2 cartesianPos, int count,
         p->active  = true;
         p->pos     = cartesianPos;
         p->vel     = Vector2{ std::cos(angle) * speed, std::sin(angle) * speed };
+        p->screenLift = screenLift;
         p->maxLife = kParticleLifetime;
         p->life    = kParticleLifetime;
         p->color   = color;
@@ -127,16 +129,18 @@ void ParticleSystem::RenderParticles(const Game& game)
 
         const Vector2 screen = CartesianToScreen(p.pos);
         const float depth = IsometricMath::CartesianToIsometric(p.pos).y + 0.03f;
+        const float screenLift = p.screenLift;
 
         // Fade based on life ratio.
         const float fadeRatio = std::max(0.0f, p.life / p.maxLife);
         const Color fadedColor = Fade(p.color, fadeRatio);
 
         // Draw small isometric shape (diamond) with size proportional to particle
-        renderer.Submit(depth, [screen, fadedColor, fadeRatio]()
+        renderer.Submit(depth, [screen, screenLift, fadedColor, fadeRatio]()
         {
             const float size = 4.0f * fadeRatio + 2.0f;
-            const IsoDiamond diamond = MakeDiamond(screen, size, size * 0.5f);
+            const Vector2 elevated{ screen.x, screen.y - screenLift };
+            const IsoDiamond diamond = MakeDiamond(elevated, size, size * 0.5f);
             DrawDiamond(diamond, fadedColor);
         });
     }

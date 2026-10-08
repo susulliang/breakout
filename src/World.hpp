@@ -74,8 +74,49 @@ inline bool IsSolidAtPoint(const Game& game, Vector2 cartesian)
 inline bool IsInsideMap(const Game& game, Vector2 cartesian)
 {
     return cartesian.x >= 0.0f && cartesian.y >= 0.0f &&
-           cartesian.x <= static_cast<float>(game.mapWidth - 1) &&
-           cartesian.y <= static_cast<float>(game.mapHeight - 1);
+           cartesian.x < static_cast<float>(game.mapWidth) &&
+           cartesian.y < static_cast<float>(game.mapHeight);
+}
+
+/// True when the complete axis-aligned actor footprint overlaps only floor cells.
+inline bool IsWalkableFootprint(const Game& game, Vector2 center, float radius)
+{
+    constexpr float kSkin = 1e-4f;
+    const int minX = static_cast<int>(std::floor(center.x - radius + kSkin));
+    const int maxX = static_cast<int>(std::floor(center.x + radius - kSkin));
+    const int minY = static_cast<int>(std::floor(center.y - radius + kSkin));
+    const int maxY = static_cast<int>(std::floor(center.y + radius - kSkin));
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
+        {
+            if (TileAt(game, x, y) != kTileFloor)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Moves an actor with the prototype's X-first axis-separated wall sliding.
+inline void MoveGroundWithWallSlide(const Game& game, Vector2& position,
+                                    Vector2 delta, float radius)
+{
+    Vector2 candidate = position;
+    candidate.x += delta.x;
+    if (IsWalkableFootprint(game, candidate, radius))
+    {
+        position.x = candidate.x;
+    }
+
+    candidate = position;
+    candidate.y += delta.y;
+    if (IsWalkableFootprint(game, candidate, radius))
+    {
+        position.y = candidate.y;
+    }
 }
 
 // ---------------------------------------------------------------------------
