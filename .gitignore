@@ -1,0 +1,25 @@
+# CMake build output
+build/
+cmake-build-*/
+
+# macOS
+.DS_Store
+
+# IDEs / editors
+.vscode/
+.idea/
+*.xcodeproj/
+
+# temp / backups
+temp/
+temp_stage/
+*.bak
+*.prev
+
+# CMake in-source generated products
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CPackConfig.cmake
+CPackSourceConfig.cmake
