@@ -152,6 +152,7 @@ struct Player
     /// EnemySystem on every hit, so a body parked on the player drains the bar
     /// at a readable, reactable pace instead of once per rendered frame.
     float hurtCooldown = 0.0f;
+    float fireAnimationTime = 1.0f; ///< time since last shot, for procedural recoil
 };
 
 /// Four fixed inventory slots; the slingshot is the unlimited default weapon.
@@ -241,6 +242,7 @@ struct Enemy
     float        radius   = 0.3f;  ///< AABB half extent, same as player
     float        hitRadius = 0.68f; ///< generous projectile target around the silhouette
     float        hitSlowTime = 0.0f; ///< remaining duration of hit stagger
+    float        hitReactionTime = 0.0f; ///< short visible flinch, independent of movement slow
     Vector2      knockbackVelocity{}; ///< brief impulse away from the shot
     EnemyState   state    = EnemyState::IDLE;
 };

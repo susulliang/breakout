@@ -90,6 +90,7 @@ add_executable(Breakout
     src/main.cpp
     src/CameraSystem.cpp
     src/SceneRenderer3D.cpp
+    src/ProceduralScene3D.cpp
     src/MapMeshBuilder.cpp
     src/IsometricMath.cpp
     src/Renderer.cpp
@@ -165,6 +166,20 @@ if(BUILD_TESTING)
     target_include_directories(BreakoutMapMeshTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(BreakoutMapMeshTests PRIVATE raylib)
     add_test(NAME breakout_map_mesh COMMAND BreakoutMapMeshTests)
+
+    add_executable(BreakoutActorPoseTests
+        tests/ActorPoseTests.cpp
+    )
+    target_include_directories(BreakoutActorPoseTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(BreakoutActorPoseTests PRIVATE raylib)
+    add_test(NAME breakout_actor_pose COMMAND BreakoutActorPoseTests)
+
+    add_executable(BreakoutCollision3DTests
+        tests/Collision3DTests.cpp
+    )
+    target_include_directories(BreakoutCollision3DTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(BreakoutCollision3DTests PRIVATE raylib)
+    add_test(NAME breakout_collision_3d COMMAND BreakoutCollision3DTests)
 endif()
 
 # -----------------------------------------------------------------------------

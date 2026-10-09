@@ -425,6 +425,7 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
         if (!e.active) continue;
 
         e.hitSlowTime = std::max(0.0f, e.hitSlowTime - deltaTime);
+        e.hitReactionTime = std::max(0.0f, e.hitReactionTime - deltaTime);
         const float knockbackStepX = e.knockbackVelocity.x * deltaTime;
         const float knockbackStepY = e.knockbackVelocity.y * deltaTime;
         MoveGroundWithWallSlide(game, e.pos,
@@ -563,6 +564,7 @@ void EnemySystem::UpdateEnemies(Game& game, float deltaTime)
                 const float damage = b.damage * (headshot ? 4.0f : 1.0f);
                 e.hp -= damage;
                 e.hitSlowTime = 1.0f;
+                e.hitReactionTime = 0.28f;
                 e.knockbackVelocity.x += (b.vel.x / std::max(1e-4f, b.speed)) * 3.2f;
                 e.knockbackVelocity.y += (b.vel.y / std::max(1e-4f, b.speed)) * 3.2f;
                 const float knockbackSpeed = VectorLength(e.knockbackVelocity);

@@ -29,6 +29,7 @@ int main()
     CHECK(block.walls.positions.size() == 48);
     CHECK(block.walls.normals.size() == block.walls.positions.size());
     CHECK(block.walls.colors.size() == block.walls.positions.size());
+    CHECK(block.walls.texcoords.size() == block.walls.positions.size());
     CHECK(block.walls.indices.size() == 72);
     for (const std::uint16_t index : block.walls.indices)
         CHECK(index < block.walls.positions.size());
@@ -37,6 +38,7 @@ int main()
         { kTileFloor }, 1, 1, 0, 0, 0.816497f);
     CHECK(floor.floors.positions.size() == 8);
     CHECK(floor.floors.indices.size() == 12);
+    CHECK(floor.floors.texcoords.size() == floor.floors.positions.size());
     CHECK(floor.walls.positions.empty());
 
     std::vector<int> splitWalls(static_cast<std::size_t>(17 * 3), kTileVoid);

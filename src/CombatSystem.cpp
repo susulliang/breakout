@@ -285,6 +285,7 @@ void CombatSystem::UpdateCombat(Game& game, float deltaTime)
                                          baseDirection.x * s + baseDirection.y * c };
                 SpawnBullet(game, direction, selected, mouseWorld);
             }
+            game.player.fireAnimationTime = 0.0f;
             if (selected != WeaponSlot::Slingshot)
                 --game.weapons.ammo[static_cast<std::size_t>(selected)];
             game.weapons.fireCooldown = stats.cooldown;

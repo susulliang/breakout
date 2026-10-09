@@ -14,6 +14,7 @@ struct MeshData
     std::vector<Vector3> positions;
     std::vector<Vector3> normals;
     std::vector<Color> colors;
+    std::vector<Vector2> texcoords;
     std::vector<std::uint16_t> indices;
 };
 

@@ -25,6 +25,10 @@ bool AppendQuad(MapMeshBuilder::MeshData& mesh, Vector3 a, Vector3 b,
     mesh.positions.insert(mesh.positions.end(), { a, b, c, d });
     mesh.normals.insert(mesh.normals.end(), 4, normal);
     mesh.colors.insert(mesh.colors.end(), 4, color);
+    mesh.texcoords.insert(mesh.texcoords.end(), {
+        Vector2{ 0.0f, 0.0f }, Vector2{ 0.0f, 1.0f },
+        Vector2{ 1.0f, 1.0f }, Vector2{ 1.0f, 0.0f }
+    });
     const auto first = static_cast<std::uint16_t>(base);
     mesh.indices.insert(mesh.indices.end(), {
         first, static_cast<std::uint16_t>(first + 1), static_cast<std::uint16_t>(first + 2),

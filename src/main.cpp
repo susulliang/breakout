@@ -35,6 +35,7 @@
 #include "LightingSystem.hpp"
 #include "MapGenerator.hpp"
 #include "MapRenderer.hpp"
+#include "ProceduralScene3D.hpp"
 #include "SceneRenderer3D.hpp"
 #include "ParticleSystem.hpp"
 #include "PlayerSystem.hpp"
@@ -93,6 +94,7 @@ Game g_game{};
 /// Phase 3.F: RenderTexture + GLSL lighting pipeline for the PLAYING state.
 LightingSystem g_lighting{};
 SceneRenderer3D g_scene3D{};
+ProceduralScene3D g_proceduralScene3D{};
 
 // -----------------------------------------------------------------------------
 //  Small helpers
@@ -424,18 +426,25 @@ void DrawDiagnostic3D(const Game& game)
         }
     }
 
-    for (const Enemy& enemy : game.enemies)
+    if (g_proceduralScene3D.IsAvailable())
     {
-        if (enemy.active)
-        {
-            DrawCubeV(Vector3{ enemy.pos.x, 0.6f, enemy.pos.y },
-                      Vector3{ 0.42f, 1.2f, 0.42f }, Color{ 204, 56, 64, 255 });
-        }
+        g_proceduralScene3D.Draw(game);
     }
-    DrawCubeV(Vector3{ game.player.pos.x, 0.6f, game.player.pos.y },
-              Vector3{ 0.45f, 1.2f, 0.45f }, Color{ 72, 145, 242, 255 });
-    DrawCubeV(Vector3{ game.levelExit.x, 0.35f, game.levelExit.y },
-              Vector3{ 0.12f, 0.7f, 0.12f }, kColorExit);
+    else
+    {
+        for (const Enemy& enemy : game.enemies)
+        {
+            if (enemy.active)
+            {
+                DrawCubeV(Vector3{ enemy.pos.x, 0.6f, enemy.pos.y },
+                          Vector3{ 0.42f, 1.2f, 0.42f }, Color{ 204, 56, 64, 255 });
+            }
+        }
+        DrawCubeV(Vector3{ game.player.pos.x, 0.6f, game.player.pos.y },
+                  Vector3{ 0.45f, 1.2f, 0.45f }, Color{ 72, 145, 242, 255 });
+        DrawCubeV(Vector3{ game.levelExit.x, 0.35f, game.levelExit.y },
+                  Vector3{ 0.12f, 0.7f, 0.12f }, kColorExit);
+    }
 
     const Vector3 axisOrigin{ game.player.pos.x, 0.02f, game.player.pos.y };
     DrawLine3D(axisOrigin, Vector3{ axisOrigin.x + 1.0f, axisOrigin.y, axisOrigin.z },
@@ -685,6 +694,7 @@ int main(int argc, char** argv)
     // (never crashes) when assets/shaders/lighting.fs is missing.
     g_lighting.Initialize();
     g_scene3D.Initialize();
+    g_proceduralScene3D.Initialize();
 
     PlayerSystem::LoadAssets(g_game);
     EnemySystem::LoadAssets(g_game);
@@ -794,6 +804,7 @@ int main(int argc, char** argv)
     EnemySystem::UnloadAssets(g_game);
     CombatSystem::UnloadAssets(g_game);
     PlayerSystem::UnloadAssets(g_game);
+    g_proceduralScene3D.Shutdown();
     g_scene3D.Shutdown();
     g_lighting.Shutdown();
     ShowCursor();

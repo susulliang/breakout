@@ -94,6 +94,9 @@ int PlayerSystem::CurrentFrame(const Game& game)
 
 void PlayerSystem::UpdatePlayer(Game& game, float deltaTime)
 {
+    game.player.fireAnimationTime = std::min(
+        1.0f, game.player.fireAnimationTime + deltaTime);
+
     const Vector2 aimPoint{ game.aim.groundPoint.x, game.aim.groundPoint.z };
     const Vector2 aimDelta{ aimPoint.x - game.player.pos.x, aimPoint.y - game.player.pos.y };
 

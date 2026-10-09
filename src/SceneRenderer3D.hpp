@@ -25,7 +25,9 @@ private:
         Mesh walls{};
     };
 
+    Texture2D CreateSurfaceTexture(bool floor) const;
     std::vector<Chunk> m_chunks;
-    Material m_material{};
+    Material m_floorMaterial{};
+    Material m_wallMaterial{};
     bool m_ready = false;
 };
